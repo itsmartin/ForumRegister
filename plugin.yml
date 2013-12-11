@@ -1,0 +1,7 @@
+name: ForumRegister
+main: tv.rmct.forumregister.ForumRegister
+version: 1.0
+description: Register users with a forum, validating their IGN
+commands:
+ register:
+  description: Register with the forum
