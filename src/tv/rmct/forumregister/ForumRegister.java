@@ -1,8 +1,11 @@
 package tv.rmct.forumregister;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLEncoder;
@@ -11,6 +14,7 @@ import java.util.regex.Pattern;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.conversations.BooleanPrompt;
 import org.bukkit.conversations.Conversation;
 import org.bukkit.conversations.ConversationFactory;
 import org.bukkit.conversations.StringPrompt;
@@ -31,12 +35,26 @@ public class ForumRegister extends JavaPlugin implements Listener {
 	private static final String CONSOLE_INVOCATION_MESSAGE = ChatColor.RED + "That command is not available from the console";
 	private static final String CONFIRM_EMAIL_MESSAGE = ChatColor.YELLOW + "Please type your email address again (on its own) to confirm:";
 	private static final String EMAILS_DIFFER_MESSAGE = ChatColor.RED + "Your response did not match. Please start again.";
-	private static final String SYNTAX_HELP_MESSAGE = ChatColor.YELLOW + "To register, type " + ChatColor.AQUA + "/register "
+	private static final String REGISTER_SYNTAX_HELP_MESSAGE = ChatColor.YELLOW + "To register, type " + ChatColor.AQUA + "/register "
 			+ ChatColor.ITALIC + "your-email-address";
+	private static final String RESET_SYNTAX_HELP_MESSAGE = ChatColor.YELLOW + "To reset your password, type " + ChatColor.AQUA + "/reset";
 	private static final String PLAYER_JOIN_MESSAGE = null;
 	private static final String REGISTRATION_BEGIN_MESSAGE = ChatColor.GRAY + "Registering you...";
 	private static final String REGISTRATION_SUCCESS_MESSAGE = ChatColor.GREEN + "Forum registration succeeded! Please check your email for\nfurther instructions.";
 	private static final String REGISTRATION_FAILED_MESSAGE = ChatColor.RED + "Registration failed. Please try again later. If this problem persists, please contact staff.";
+	private static final String ALREADY_REGISTERED_MESSAGE = ChatColor.RED + "You are already registered!\n" 
+			+ ChatColor.YELLOW + "If you have forgotten your password, you can reset it by\ntyping " 
+			+ ChatColor.AQUA + "/reset"; 
+
+	private static final String CONFIRM_RESET_MESSAGE = ChatColor.YELLOW + "Are you sure you want to reset your forum password?\n"
+			+ "Please say " + ChatColor.AQUA + "yes" + ChatColor.YELLOW + " or " + ChatColor.AQUA + "no"
+			+ ChatColor.YELLOW + ":";
+	private static final String RESET_BEGIN_MESSAGE = ChatColor.GRAY + "Resetting password...";
+	private static final String RESET_SUCCESS_MESSAGE = ChatColor.GREEN + "Your password has been reset. Please check your email for\nfurther instructions.";
+	private static final String RESET_FAILED_MESSAGE = ChatColor.RED + "Password reset failed. Please try again later. If this problem persists, please contact staff.\n"
+			+ ChatColor.RED + "If you need further help, please contact staff.";
+	private static final String RESET_ABORTED_MESSAGE = ChatColor.RED + "Password reset cancelled.";
+	
 	private static final String EMAIL_INVALID_MESSAGE = ChatColor.RED + "That does not appear to be a valid email address. For help\nwith registration, type " + ChatColor.AQUA + "/register" + ChatColor.RED + ".";
 	
 	private String url;
@@ -44,7 +62,10 @@ public class ForumRegister extends JavaPlugin implements Listener {
 	private ConversationFactory registrationConversation = new ConversationFactory(this)
 			.withFirstPrompt(new EmailConfirmationPrompt())
 			.withLocalEcho(false);
-	
+	private ConversationFactory resetConversation = new ConversationFactory(this)
+	.withFirstPrompt(new ResetConfirmationPrompt())
+	.withLocalEcho(false);
+
 	
 	@Override
 	public void onEnable() {
@@ -72,6 +93,15 @@ public class ForumRegister extends JavaPlugin implements Listener {
 				return true;
 			}
 		}
+		if (command.getName().equalsIgnoreCase("reset")) {
+			if (sender instanceof Player) {
+				cmdReset((Player) sender, args);
+				return true;
+			} else {
+				sender.sendMessage(CONSOLE_INVOCATION_MESSAGE);
+				return true;
+			}
+		}
 		return false;
 	}
 	
@@ -87,10 +117,19 @@ public class ForumRegister extends JavaPlugin implements Listener {
 				player.sendMessage(EMAIL_INVALID_MESSAGE);
 			}
 		} else {
-			player.sendMessage(SYNTAX_HELP_MESSAGE);
+			player.sendMessage(REGISTER_SYNTAX_HELP_MESSAGE);
 		}
-		
-		
+	}
+	
+	private void cmdReset(Player player, String[] args) {
+		if (player.isConversing()) return;
+		if (args.length > 1) {
+			player.sendMessage(RESET_SYNTAX_HELP_MESSAGE);
+			return;
+		}
+		Conversation c = resetConversation.buildConversation(player);
+		c.getContext().setSessionData("player", player);
+		c.begin();
 	}
 	
 	private void initRegistration(final Player player, final String email) {
@@ -98,10 +137,31 @@ public class ForumRegister extends JavaPlugin implements Listener {
 		getServer().getScheduler().runTaskLaterAsynchronously(this, new Runnable() {
 			public void run() {
 				syncSendMessage(player, REGISTRATION_BEGIN_MESSAGE);
-				if (sendRegistration(ign, email)) {
+				RegistrationOutcome outcome = sendRegistration(ign, email, false);
+				if (outcome == RegistrationOutcome.SUCCESS) {
 					syncSendMessage(player, REGISTRATION_SUCCESS_MESSAGE);
 				} else {
-					syncSendMessage(player, REGISTRATION_FAILED_MESSAGE);
+					if (outcome == RegistrationOutcome.ALREADY_REGISTERED) {
+						syncSendMessage(player, ALREADY_REGISTERED_MESSAGE);
+					} else {
+						syncSendMessage(player, REGISTRATION_FAILED_MESSAGE);
+					}
+				}
+			}
+		}, 0);
+	}
+	
+
+	private void initReset(final Player player) {
+		final String ign = player.getName();
+		getServer().getScheduler().runTaskLaterAsynchronously(this, new Runnable() {
+			public void run() {
+				syncSendMessage(player, RESET_BEGIN_MESSAGE);
+				RegistrationOutcome outcome = sendRegistration(ign, ign, true);
+				if (outcome == RegistrationOutcome.SUCCESS) {
+					syncSendMessage(player, RESET_SUCCESS_MESSAGE);
+				} else {
+					syncSendMessage(player, RESET_FAILED_MESSAGE);
 				}
 			}
 		}, 0);
@@ -114,29 +174,53 @@ public class ForumRegister extends JavaPlugin implements Listener {
 			}
 		});
 	}
-	
-	private Boolean sendRegistration(String ign, String email) {
-		try {
-			URL url = new URL(this.url);
-			String postData = URLEncoder.encode("key", "UTF-8") + "=" + URLEncoder.encode(this.key, "UTF-8") + "&" +
-					URLEncoder.encode("username", "UTF-8") + "=" + URLEncoder.encode(ign, "UTF-8") + "&" +
-					URLEncoder.encode("email", "UTF-8") + "=" + URLEncoder.encode(email, "UTF-8");
+		
+	private RegistrationOutcome sendRegistration(String ign, String email, boolean resetPassword) {
 
-			URLConnection connection = url.openConnection();
-			connection.setDoOutput(true);
+			try {
+				URL url = new URL(this.url);
+				String function = (resetPassword ? "reset" : "register");
 
-			OutputStream outputStream = connection.getOutputStream();
-			outputStream.write(postData.getBytes("UTF-8"));
-			outputStream.close();
+				getLogger().info((resetPassword ? "Resetting password for " : "Registering ") + ign + " (" + email + ")");
+				
+				String postData = URLEncoder.encode("key", "UTF-8") + "=" + URLEncoder.encode(this.key, "UTF-8") + "&" +
+						URLEncoder.encode("username", "UTF-8") + "=" + URLEncoder.encode(ign, "UTF-8") + "&" +
+						URLEncoder.encode("email", "UTF-8") + "=" + URLEncoder.encode(email, "UTF-8") + "&" +
+						URLEncoder.encode("function", "UTF-8") + "=" + URLEncoder.encode(function, "UTF-8");
 
-			BufferedReader br = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+				URLConnection connection = url.openConnection();
+				connection.setDoOutput(true);
 
-			String response = br.readLine();
-			return (response.startsWith("success"));
+				OutputStream outputStream = connection.getOutputStream();
+				outputStream.write(postData.getBytes("UTF-8"));
+				outputStream.close();
 
-		} catch (Exception ex) {
-			return false;
-		}
+				BufferedReader br = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+
+				String response = br.readLine();
+				if (response.toLowerCase().startsWith("success")) {
+					getLogger().info("Operation succeded");
+					return RegistrationOutcome.SUCCESS;
+				} else if (response.toLowerCase().startsWith("error:already registered")) {
+					getLogger().info("Failed - already registered");
+					return RegistrationOutcome.ALREADY_REGISTERED;
+				} else {
+					getLogger().info("Failed with response: " + response);
+					return RegistrationOutcome.OTHER_ERROR;
+				}
+				
+			} catch (MalformedURLException e) {
+				getLogger().severe("Malformed URL in configuration");
+				return RegistrationOutcome.CONFIGURATION_ERROR;
+			} catch (UnsupportedEncodingException e) {
+				getLogger().severe("UTF-8 encoding is not supported");
+				return RegistrationOutcome.CONFIGURATION_ERROR;
+			} catch (IOException e) {
+				getLogger().info("Failed due to I/O error: " + e.getMessage());
+				return RegistrationOutcome.CONNECTION_ERROR;
+			}
+
+
 	}
 	
 	
@@ -164,5 +248,24 @@ public class ForumRegister extends JavaPlugin implements Listener {
 			return Prompt.END_OF_CONVERSATION;
 		}
 
+	}
+	
+	private class ResetConfirmationPrompt extends BooleanPrompt {
+
+		@Override
+		public String getPromptText(ConversationContext context) {
+			return CONFIRM_RESET_MESSAGE;
+		}
+
+		@Override
+		protected Prompt acceptValidatedInput(ConversationContext context, boolean response) {
+			if (response)
+				((ForumRegister) context.getPlugin()).initReset((Player) context.getSessionData("player"));
+			else
+				context.getForWhom().sendRawMessage(RESET_ABORTED_MESSAGE);
+
+			return Prompt.END_OF_CONVERSATION;
+		}
+		
 	}
 }

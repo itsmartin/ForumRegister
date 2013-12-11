@@ -5,3 +5,6 @@ description: Register users with a forum, validating their IGN
 commands:
  register:
   description: Register with the forum
+  usage: /register email-address
+ reset:
+  description: Reset your forum password
